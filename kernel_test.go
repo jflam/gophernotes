@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -37,64 +38,38 @@ func logFatalError(t *testing.T, message string, err error) {
 	t.Fatalf("\t%s %s: %s", failure, message, err)
 }
 
-// TestJupyterClient is how I'm going to build my own testbed for a go jupyer
-// client by piggybacking on top of the existing testing infrastructure for the
-// golang kernel.
-func TestJupyterClient(t *testing.T) {
+func TestGoLangKernel(t *testing.T) {
 
-	// The first thing to do when starting up a Jupyter client is read the
-	// connection info *file*. There needs to be a better protocol for this
-	// kind of startup.
-	var connInfo ConnectionInfo
-
-	// Open a file connection
-	connData, err := ioutil.ReadFile(connectionFile)
+	//cmd := exec.Command("gophernotes", "/Users/jflam/go/src/github.com/jflam/gophernotes/fixtures/connection_file.json")
+	cmd := exec.Command("/anaconda3/bin/python", "/Users/jflam/go/src/github.com/jflam/gophernotes/fixtures/connection_file.json")
+	err := cmd.Start()
 	if err != nil {
-		logFatalError(t, "ReadFile", err)
+		logFatalError(t, "start", err)
 	}
 
-	// Unmarshal the JSON payload in the connection file into the connData
-	// struct.
-	err = json.Unmarshal(connData, &connInfo)
-	if err != nil {
-		logFatalError(t, "json.Unmarshal", err)
+	// Now make the call
+	client, closeClient := newTestJupyterClient(t)
+	defer closeClient()
+
+	content, pub := client.executeCode(t, "1 + 1")
+	status := getString(t, "content", content, "status")
+
+	if status != "ok" {
+		t.Fatalf("\t%s Kernel execution error [%s]: %s", failure, content["ename"], content["evalue"])
 	}
 
-	// Start the kernel as a separate process
-	go runKernel(connectionFile)
-
-	// Now let's create a Jupyter client
-	var shellSocket *zmq.Socket
-	var ioSocket *zmq.Socket
-
-	addrShell := fmt.Sprintf("%s://%s:%d", connInfo.Transport, connInfo.IP, connInfo.ShellPort)
-	addrIO := fmt.Sprintf("%s://%s:%d", connInfo.Transport, connInfo.IP, connInfo.IOPubPort)
-
-	// Open the shell socket
-	shellSocket, err = zmq.NewSocket(zmq.REQ)
-	if err != nil {
-		logFatalError(t, "zmq.NewSocket", err)
+	// Iterate over the results
+	// Now figure out how to open a different kernel!
+	for _, pubMsg := range pub {
+		if pubMsg.Header.MsgType == "execute_result" {
+			content = getMsgContentAsJSONObject(t, pubMsg)
+			bundledMIMEData := getJSONObject(t, "content", content, "data")
+			textRep := getString(t, `content["data"]`, bundledMIMEData, "text/plain")
+			if textRep != "2" {
+				t.Fatalf("\t%s 1 + 1 must equal 2", failure)
+			}
+		}
 	}
-
-	if err = shellSocket.Connect(addrShell); err != nil {
-		logFatalError(t, "shellSocket.Connect", err)
-	}
-
-	// Open the iopub socket
-	ioSocket, err = zmq.NewSocket(zmq.SUB)
-	if err != nil {
-		logFatalError(t, "zmq.NewSocket", err)
-	}
-
-	if err = ioSocket.Connect(addrIO); err != nil {
-		logFatalError(t, "ioSocket.Connect", err)
-	}
-
-	if err = ioSocket.SetSubscribe(""); err != nil {
-		logFatalError(t, "ioSocket.SetSubscribe", err)
-	}
-
-	// Send a hello world message "1+1"
 }
 
 func TestMain(m *testing.M) {
@@ -124,7 +99,7 @@ func runTest(m *testing.M) int {
 	iopubPort = connInfo.IOPubPort
 
 	// Start the kernel.
-	go runKernel(connectionFile)
+	//go runKernel(connectionFile)
 
 	return m.Run()
 }
